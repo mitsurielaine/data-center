@@ -29,12 +29,12 @@ trabajo).
 
 ### 1.2 Diagrama de arquitectura
 
-```
-[COMPLETAR: pegar aquí el diagrama — se puede pedir a Claude Desktop que lo genere una vez
-se tenga la IP real, mostrando: Usuario → VPS AWS EC2 → (Security Group + UFW) →
-contenedor frontend (Nginx:80) → contenedor backend (Node/Express:3000, red interna) →
-contenedor database (PostgreSQL:5432, red interna) → GitHub Actions (push a main → SSH deploy)]
-```
+![Diagrama de arquitectura](diagrama_arquitectura.png)
+
+Usuario → HTTP:80 → VPS AWS EC2 (3.144.146.133) → [Security Group + UFW] → frontend
+(Nginx:80, único puerto expuesto) → backend (Node/Express:3000, red interna) → database
+(PostgreSQL 16:5432, red interna). En paralelo: desarrollador → push a `main` → GitHub
+Actions (validate + deploy por SSH:22) → VPS.
 
 ### 1.3 Componentes principales
 
@@ -74,7 +74,7 @@ contenedor database (PostgreSQL:5432, red interna) → GitHub Actions (push a ma
 | 9 | Variables de entorno | `.env` creado a partir de `.env.example`; `DB_PASSWORD` generada directamente en el servidor con `openssl rand -hex 20` (nunca pasó por el chat ni quedó versionada — `.env` está en `.gitignore`). |
 | 10 | Primer despliegue | `docker compose up -d --build`: build completo en ~9 s (t3.micro con swap, sin cuelgues). `docker compose ps`: `data-center-db` (postgres:16-alpine) **healthy**, `data-center-backend` y `data-center-frontend` **Up**; solo el frontend publica `0.0.0.0:80->80`. `curl http://localhost/api/health` → `{"status":"ok","db":"connected"}`. |
 | 11 | Verificación funcional | `http://3.144.146.133/api/health` respondió `{"status":"ok","db":"connected"}` desde internet (verificado desde fuera de la red del VPS). CRUD probado manualmente en el navegador vía IP pública: se creó la tarea "Prueba de url", se marcó como completada, se probó el filtro por título y la eliminación. El panel muestra los contadores (pendientes/completadas/total) sincronizados con la base. | |
-| 12 | fail2ban (opcional) | [COMPLETAR si se instaló] |
+| 12 | fail2ban | Instalado fail2ban 1.0.2 con el jail `sshd` activo (`systemctl enable --now fail2ban`). Mitiga fuerza bruta sobre SSH, necesario porque el puerto 22 se abrió a 0.0.0.0/0 para los runners de GitHub Actions (IPs dinámicas). |
 | 13 | Respaldos automáticos | Cron diario 03:00 con `pg_dump` + gzip, retención 7 días |
 
 ---
@@ -107,15 +107,23 @@ guardada como secreto de GitHub) y ejecuta: `git fetch` + `git reset --hard orig
 
 | Secreto | Propósito |
 |---|---|
-| `VPS_HOST` | [COMPLETAR: IP pública] |
+| `VPS_HOST` | `3.144.146.133` (IP pública de la instancia) |
 | `VPS_USER` | `ubuntu` |
 | `VPS_SSH_KEY` | Llave privada dedicada al pipeline (distinta de la personal y de la deploy key) |
 | `VPS_PORT` | `22` |
 
 ### 3.5 Evidencia de funcionamiento
 
-[COMPLETAR: describir la prueba real — un cambio menor, push a main, y el workflow ejecutándose
-en verde en la pestaña Actions, con el cambio reflejado en la IP pública sin tocar el VPS a mano]
+Dato real de la bitácora: la **primera** ejecución del workflow (disparada por el push inicial del
+proyecto, antes de existir el VPS y los secretos) falló en el job `deploy` — comportamiento esperado
+que confirmó que el pipeline no despliega si no puede conectarse al servidor.
+
+Prueba definitiva: se editó una línea del `frontend/index.html` (se agregó el texto "Desplegado
+automáticamente con GitHub Actions.") y se hizo push a `main` (commit `565b797`). El workflow corrió
+`validate` (npm ci + verificación de sintaxis + `docker compose config` + build de imágenes) y luego
+`deploy` (SSH real al VPS, `git reset --hard origin/main`, `docker compose up -d --build`, health
+check con `curl`). En ~3 minutos el cambio quedó visible en `http://3.144.146.133` **sin tocar el
+VPS manualmente**, verificado desde fuera de la red del servidor.
 
 ---
 
@@ -124,14 +132,15 @@ en verde en la pestaña Actions, con el cambio reflejado en la IP pública sin t
 *(Rúbrica 4.4 — "firewall configurado, respaldos automatizados y logs revisados")*
 
 ### 4.1 Firewall en dos capas
-- **AWS Security Group**: permite únicamente 22 (SSH) y 80 (HTTP) [COMPLETAR: origen de cada regla].
+- **AWS Security Group**: permite únicamente 22 (SSH) y 80 (HTTP). El 22 se restringió inicialmente a la IP del administrador ("Mi IP") y se abrió a 0.0.0.0/0 recién al configurar el pipeline (los runners de GitHub Actions no tienen IP fija), riesgo mitigado con fail2ban. El 80 está abierto a 0.0.0.0/0 por ser el servicio web público.
 - **UFW** (sistema operativo): misma política de puertos, segunda capa independiente.
 - El backend (3000) y la base de datos (5432) nunca se exponen fuera de la red interna de Docker.
 
 ### 4.2 Respaldo de la base de datos
 Script `~/backups/backup-db.sh` ejecuta `pg_dump` sobre la base, comprime con `gzip` y elimina
-respaldos de más de 7 días. Cron diario a las 03:00. [COMPLETAR: confirmar ejecución manual de
-prueba y que el archivo `.sql.gz` se generó correctamente]
+respaldos de más de 7 días. Cron diario a las 03:00 (`0 3 * * *`, verificado con `crontab -l`).
+Prueba manual ejecutada con éxito: se generó `tasksdb_2026-07-24_022013.sql.gz` (976 B comprimido)
+en `~/backups/`, con log de ejecuciones en `~/backups/backup.log`.
 
 ### 4.3 Gestión de secretos
 Ningún secreto (contraseña de base de datos, llaves privadas) está versionado en Git — `.env`
@@ -139,21 +148,30 @@ está excluido vía `.gitignore`. Las credenciales del pipeline viven únicament
 Actions Secrets, cifrados y ocultos en los logs.
 
 ### 4.4 Recomendaciones futuras
-[COMPLETAR: por ejemplo, mover respaldos a S3, restringir el puerto 22 a rangos de IP de GitHub
-Actions, habilitar `unattended-upgrades`, etc.]
+Copiar los respaldos fuera de la instancia (por ejemplo a un bucket S3 con ciclo de vida) para
+sobrevivir a la pérdida del volumen; restringir el puerto 22 a los rangos de IP publicados por
+GitHub Actions (`api.github.com/meta`) en lugar de 0.0.0.0/0; habilitar `unattended-upgrades`
+para parches de seguridad automáticos; agregar HTTPS con un certificado de Let's Encrypt usando
+un subdominio gratuito tipo nip.io; y configurar alarmas de CloudWatch (CPU, disco, estado) para
+detectar incidentes sin entrar al servidor.
 
 ---
 
 ## 5. Conclusión
 
-[COMPLETAR: 3-4 líneas resumiendo que la infraestructura cumple los 4 requisitos técnicos del
-enunciado: VPS real, stack completo con BD relacional, CI/CD automático por SSH, y plan de
-mantenimiento con firewall en dos capas y respaldos automáticos]
+La infraestructura desplegada cumple los cuatro requisitos técnicos del enunciado: un VPS real
+(AWS EC2 t3.micro con Ubuntu 24.04, IP pública 3.144.146.133), un stack completo de tres capas con
+base de datos relacional (Nginx + Node.js/Express + PostgreSQL 16, orquestado con Docker Compose
+sobre una red interna privada), un pipeline de CI/CD que valida y despliega automáticamente por SSH
+en cada push a `main` (verificado con un despliegue real de extremo a extremo), y un plan de
+mantenimiento con firewall en dos capas (Security Group + UFW), fail2ban y respaldos diarios
+automatizados de la base de datos. Todo el proceso quedó documentado como bitácora real, incluyendo
+los problemas encontrados y su resolución.
 
 ## 6. Anexos
 
-- Anexo 1: [COMPLETAR: captura de la instancia EC2 en la consola de AWS]
-- Anexo 2: [COMPLETAR: captura de las reglas de entrada del Security Group]
-- Anexo 3: [COMPLETAR: captura de la pestaña Actions de GitHub con el workflow en verde]
-- Anexo 4: [COMPLETAR: captura de `docker compose ps` mostrando los 3 contenedores]
-- Anexo 5: [COMPLETAR: captura de la app funcionando en el navegador vía IP pública]
+- Anexo 1: Instancia EC2 `data-center-vps` en ejecución en la consola de AWS (IP 3.144.146.133).
+- Anexo 2: Reglas de entrada del Security Group `data-center-sg` (SSH 22 y HTTP 80).
+- Anexo 3: Pestaña Actions de GitHub — run #2 en verde (`validate` 16s + `deploy` 24s) tras el push de prueba; run #1 en rojo (push inicial, antes de existir el VPS).
+- Anexo 4: `docker compose ps` en el VPS mostrando los 3 contenedores (db healthy, backend y frontend up).
+- Anexo 5: La aplicación funcionando en el navegador vía `http://3.144.146.133` (CRUD sobre PostgreSQL).
