@@ -2,7 +2,7 @@
 
 **Materia:** Administración de Data Center
 **Docente:** Ing. Carlos Muñoz M.
-**Autor:** [TU NOMBRE COMPLETO]
+**Autor:** Marisa Eliana Matias Alcivar
 
 > Esta plantilla sigue exactamente las 4 secciones que exige el enunciado (punto 2) y los 5
 > criterios de la rúbrica (punto 3). Cada `[COMPLETAR: ...]` se llena con datos reales una vez
@@ -24,7 +24,7 @@ orquestados con Docker Compose. Tres servicios conforman el stack: un contenedor
 se comunican mediante una red bridge privada de Docker (`internal`); solo Nginx publica el
 puerto 80 hacia internet.
 
-Acceso: `http://[COMPLETAR: TU_IP_PUBLICA]` (sin dominio propio, según lo definido para este
+Acceso: `http://3.144.146.133` (sin dominio propio, según lo definido para este
 trabajo).
 
 ### 1.2 Diagrama de arquitectura
@@ -40,7 +40,7 @@ contenedor database (PostgreSQL:5432, red interna) → GitHub Actions (push a ma
 
 | Componente | Tecnología | Función |
 |---|---|---|
-| Instancia VPS | AWS EC2 [COMPLETAR: tipo], Ubuntu 24.04 LTS | Servidor real con IP pública [COMPLETAR] |
+| Instancia VPS | AWS EC2 t3.micro, Ubuntu 24.04 LTS | Servidor real con IP pública 3.144.146.133 (región us-east-2, Ohio) |
 | Frontend | Nginx + HTML/CSS/JS | Sirve el SPA, proxy `/api/` hacia el backend |
 | Backend | Node.js + Express | API REST (`/api/tasks`, `/api/health`), solo en red interna |
 | Database | PostgreSQL 16 | Persiste las tareas; puerto 5432 solo accesible internamente |
@@ -63,17 +63,17 @@ contenedor database (PostgreSQL:5432, red interna) → GitHub Actions (push a ma
 
 | Paso | Actividad | Detalle |
 |---|---|---|
-| 1 | Cuenta AWS | [COMPLETAR] |
-| 2 | Security Group | [COMPLETAR: nombre, reglas exactas creadas] |
-| 3 | Lanzamiento de instancia | [COMPLETAR: tipo, AMI, key pair, IP asignada] |
-| 4 | Conexión SSH | [COMPLETAR: ¿directa o EC2 Instance Connect? ¿hubo problemas?] |
-| 5 | Actualización del sistema | `sudo apt update && sudo apt upgrade -y` |
-| 6 | Firewall UFW | [COMPLETAR: puertos permitidos, resultado de `sudo ufw status`] |
-| 7 | Instalación de Docker | [COMPLETAR: versión instalada, `docker --version`] |
-| 8 | Clonado del repositorio | [COMPLETAR: deploy key usada, resultado] |
-| 9 | Variables de entorno | `.env` creado en el servidor (nunca versionado) |
-| 10 | Primer despliegue | `docker compose up -d --build` — [COMPLETAR: resultado, `docker compose ps`] |
-| 11 | Verificación funcional | [COMPLETAR: CRUD probado manualmente por IP pública] |
+| 1 | Cuenta AWS | Cuenta free plan (ID 705061159695), región us-east-2 (Ohio). Alerta de presupuesto creada con la plantilla *Zero spend budget* (notifica al superar $0,01; la plantilla muestra $1 como monto nominal interno, lo cual generó una duda inicial que se aclaró leyendo la descripción de la propia plantilla). |
+| 2 | Security Group | `data-center-sg` (sg-053023b53ec696b20). Entrada: SSH 22 solo desde la IP del administrador (181.211.216.101/32, opción "Mi IP") y HTTP 80 desde 0.0.0.0/0. Detalle real: la regla HTTP quedó inicialmente con origen "Personalizada" vacío y hubo que corregirla a "Cualquier lugar-IPv4" antes de crear el grupo. Salida: todo permitido (por defecto). |
+| 3 | Lanzamiento de instancia | `data-center-vps` (i-0962f700486021b25), t3.micro (apto capa gratuita), AMI Ubuntu Server 24.04 LTS (ami-0ea1cddefe0c4aed5), zona us-east-2c, disco 20 GiB gp3. Key pair RSA `data-center-key.pem` generado al lanzar. IP pública asignada: 3.144.146.133. |
+| 4 | Conexión SSH | Directa con OpenSSH de Windows: `ssh -i data-center-key.pem ubuntu@3.144.146.133`. Problema real: el primer intento falló con `WARNING: UNPROTECTED PRIVATE KEY FILE` / `bad permissions` porque el `.pem` heredaba permisos de lectura de otros grupos del sistema. Se resolvió con `icacls data-center-key.pem /inheritance:r /grant:r "%USERNAME%:R"` (quita la herencia y deja solo lectura para el usuario dueño). Segundo intento: conexión exitosa a Ubuntu 24.04.4 LTS. |
+| 5 | Actualización del sistema | `sudo apt update && sudo apt upgrade -y` (con `NEEDRESTART_MODE=a` para evitar diálogos interactivos): 75 paquetes actualizados + kernel nuevo 6.17.0-1019-aws instalado (63 actualizaciones de seguridad LTS). Se reinició la instancia para cargar el kernel pendiente. También se creó un swapfile de 1 GiB (persistente vía `/etc/fstab`) como colchón de RAM para los builds de Docker en t3.micro (1 GiB de RAM). |
+| 6 | Firewall UFW | `ufw allow 22/tcp`, `ufw allow 80/tcp`, `ufw --force enable`. `sudo ufw status` → Status: active, con 22/tcp y 80/tcp ALLOW Anywhere (IPv4 e IPv6); todo lo demás bloqueado por defecto. |
+| 7 | Instalación de Docker | Repositorio oficial de Docker (clave GPG en `/etc/apt/keyrings/docker.gpg`). Instalado: docker-ce 29.6.2, containerd 2.2.6, docker-compose-plugin 5.3.1. Usuario `ubuntu` agregado al grupo `docker` (aplicado tras reiniciar la sesión). |
+| 8 | Clonado del repositorio | Se generó una deploy key ED25519 dedicada en el VPS (`~/.ssh/deploy_key`) y se registró en el repo vía API de GitHub con `"read_only": true` (el servidor solo puede leer, nunca escribir). Con `~/.ssh/config` apuntando a esa llave, `git clone git@github.com:mitsurielaine/data-center.git ~/data-center` clonó sin problemas. |
+| 9 | Variables de entorno | `.env` creado a partir de `.env.example`; `DB_PASSWORD` generada directamente en el servidor con `openssl rand -hex 20` (nunca pasó por el chat ni quedó versionada — `.env` está en `.gitignore`). |
+| 10 | Primer despliegue | `docker compose up -d --build`: build completo en ~9 s (t3.micro con swap, sin cuelgues). `docker compose ps`: `data-center-db` (postgres:16-alpine) **healthy**, `data-center-backend` y `data-center-frontend` **Up**; solo el frontend publica `0.0.0.0:80->80`. `curl http://localhost/api/health` → `{"status":"ok","db":"connected"}`. |
+| 11 | Verificación funcional | `http://3.144.146.133/api/health` respondió `{"status":"ok","db":"connected"}` desde internet (verificado desde fuera de la red del VPS). CRUD probado manualmente en el navegador vía IP pública: se creó la tarea "Prueba de url", se marcó como completada, se probó el filtro por título y la eliminación. El panel muestra los contadores (pendientes/completadas/total) sincronizados con la base. | |
 | 12 | fail2ban (opcional) | [COMPLETAR si se instaló] |
 | 13 | Respaldos automáticos | Cron diario 03:00 con `pg_dump` + gzip, retención 7 días |
 
