@@ -30,6 +30,10 @@ jobs:
         working-directory: backend
         run: npm run check
 
+      - name: Auditoría de seguridad de dependencias
+        working-directory: backend
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Validar sintaxis de docker-compose
         run: docker compose config --quiet
 
@@ -52,6 +56,9 @@ jobs:
             cd ~/data-center
             git fetch origin main
             git reset --hard origin/main
-            docker compose up -d --build
+            docker compose up -d --build --remove-orphans
             docker image prune -f
-            curl --fail --retry 10 --retry-delay 3 http://localhost/api/health
+            # -L sigue la redirección 308 a HTTPS cuando el certificado ya está
+            # emitido; -k porque el certificado es para el nombre nip.io, no
+            # para "localhost".
+            curl --fail -kL --retry 10 --retry-delay 3 http://localhost/api/health

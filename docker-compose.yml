@@ -1,3 +1,16 @@
+# Orquestación del stack. Endurecido tras la auditoría de seguridad:
+# usuarios sin privilegios, capacidades mínimas, límites de recursos,
+# rotación de logs y TLS con Let's Encrypt.
+
+x-logging: &logging
+  # Rotación de logs: sin esto, los logs de los contenedores pueden llenar el
+  # disco de 20 GiB de la instancia y tumbar el servicio (denegación de servicio
+  # por agotamiento de disco).
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
@@ -7,10 +20,21 @@ services:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
+      # Cifrado de contraseñas con SCRAM-SHA-256 (no MD5).
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./backend/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks: [internal]
+    # Sin "ports": la base de datos NO se publica al host ni a internet.
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.60"
+          memory: 320M
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 10s
@@ -28,20 +52,69 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME}
       PORT: 3000
+      NODE_ENV: production
     depends_on:
       db:
         condition: service_healthy
     networks: [internal]
+    # Sistema de archivos inmutable: el contenedor no puede ser modificado en
+    # caliente (ni por un atacante que logre ejecutar código en él).
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
 
   frontend:
     build: ./frontend
     container_name: data-center-frontend
     restart: unless-stopped
+    environment:
+      # Dominio del certificado (nip.io resuelve al propio VPS sin DNS propio).
+      TLS_DOMAIN: ${TLS_DOMAIN:-}
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      # Certificados y desafío ACME: Nginx solo los LEE.
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
     depends_on:
       - backend
     networks: [internal]
+    # Solo las capacidades que Nginx necesita: escuchar en puertos <1024 y
+    # degradar sus procesos worker a un usuario sin privilegios.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE, DAC_OVERRIDE]
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          cpus: "0.40"
+          memory: 128M
+
+  # Emisión y renovación del certificado TLS. No arranca con el stack
+  # (perfil "tools"): se invoca a demanda.
+  #   Emitir:   docker compose run --rm certbot certonly --webroot -w /var/www/certbot -d "$TLS_DOMAIN" --email "$CERTBOT_EMAIL" --agree-tos --no-eff-email -n
+  #   Renovar:  docker compose run --rm certbot renew --webroot -w /var/www/certbot
+  certbot:
+    image: certbot/certbot:latest
+    container_name: data-center-certbot
+    profiles: ["tools"]
+    entrypoint: ["certbot"]
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    logging: *logging
 
 networks:
   internal:
@@ -49,3 +122,5 @@ networks:
 
 volumes:
   db_data:
+  letsencrypt:
+  certbot_www:
