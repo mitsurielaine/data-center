@@ -263,6 +263,32 @@ Como en el resto de la bitácora, se documentan los problemas que surgieron:
    Encrypt (que limita los intentos) se validó el circuito ACME con un archivo de
    prueba.
 
+### 5.8 Verificación independiente posterior
+
+Terminadas las correcciones se repitió el escaneo externo con Cloudflare URL Scanner,
+esta vez sobre la URL HTTPS, para comprobar los resultados con una herramienta ajena
+al propio despliegue. El informe confirmó:
+
+- **`securityState: secure`** en todas las peticiones, con **TLS 1.3** y cifrado
+  **AES-256-GCM**, y certificado emitido para `3-144-146-133.nip.io`.
+- Las **once cabeceras de seguridad** presentes en *todos* los recursos (HTML, CSS, JS,
+  API y favicon), no solo en la página principal.
+- `Server: nginx` sin número de versión, `Cache-Control: no-store` en la API y las
+  cabeceras `RateLimit: limit=120, remaining=119, reset=60` confirmando el limitador.
+- Sin veredictos maliciosos ni categorías de riesgo.
+
+El re-escaneo detectó además dos residuos que no aparecían en la primera pasada y que
+también se corrigieron:
+
+| # | Hallazgo | Riesgo | Corrección aplicada | Verificación |
+|---|---|---|---|---|
+| 20 | Cabeceras duplicadas y contradictorias en las respuestas de `/api/`: `X-Frame-Options: SAMEORIGIN, DENY` y dos valores distintos de HSTS y `Referrer-Policy` | Bajo/Medio — helmet (backend) y Nginx (borde) emitían las mismas cabeceras y el proxy las concatenaba. Ante valores contradictorios el navegador puede **descartar la cabecera completa**, anulando la protección | `proxy_hide_header` para las ocho cabeceras que ambos emiten, de modo que Nginx queda como única fuente en el borde. Se mantiene helmet en el backend como defensa en profundidad por si la API llegara a exponerse de forma directa | Nueva respuesta de `/api/` con un único valor por cabecera |
+| 21 | `/favicon.ico` devolvía el `index.html` con `Content-Type: text/html` y código 200, por el fallback del SPA | Bajo — sirve HTML donde el navegador espera una imagen (confusión de tipo de contenido, ya mitigada por `nosniff`) | `location = /favicon.ico` responde 204 sin registrar el acceso | La ruta ya no devuelve HTML |
+
+Este ciclo —escaneo, corrección, re-escaneo y corrección de residuos— es el que
+corresponde a una auditoría real: la verificación con una herramienta independiente
+encontró detalles que la revisión manual había dejado pasar.
+
 ---
 
 ## 6. Conclusión
