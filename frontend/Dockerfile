@@ -19,22 +19,21 @@ COPY docker-entrypoint.d/40-tls-setup.sh /docker-entrypoint.d/40-tls-setup.sh
 
 # Validación de sintaxis de AMBAS configuraciones en tiempo de build: si algo
 # está mal, el pipeline falla en "docker compose build" y no en producción.
-# Se usa un certificado y un host "backend" temporales solo para la validación.
-RUN chmod +x /docker-entrypoint.d/40-tls-setup.sh \
+# Se genera un certificado temporal solo para que "nginx -t" pueda cargar el
+# sitio TLS; se elimina inmediatamente después.
+RUN apk add --no-cache openssl \
+ && chmod +x /docker-entrypoint.d/40-tls-setup.sh \
  && rm -f /etc/nginx/conf.d/default.conf \
  && mkdir -p /etc/nginx/certs /etc/nginx/snippets /var/www/certbot \
  && : > /etc/nginx/snippets/hsts.conf \
- && apk add --no-cache --virtual .build-deps openssl \
  && openssl req -x509 -nodes -newkey rsa:2048 -days 1 \
       -keyout /etc/nginx/certs/privkey.pem \
       -out /etc/nginx/certs/fullchain.pem \
       -subj "/CN=build-check" 2>/dev/null \
- && cp /etc/hosts /tmp/hosts.bak && echo "127.0.0.1 backend" >> /etc/hosts \
  && cp /etc/nginx/sites-available/site-http.conf /etc/nginx/conf.d/default.conf && nginx -t \
  && cp /etc/nginx/sites-available/site-tls.conf /etc/nginx/conf.d/default.conf && nginx -t \
- && cat /tmp/hosts.bak > /etc/hosts && rm -f /tmp/hosts.bak \
- && rm -f /etc/nginx/conf.d/default.conf /etc/nginx/certs/privkey.pem /etc/nginx/certs/fullchain.pem \
- && apk del .build-deps
+ && rm -f /etc/nginx/conf.d/default.conf \
+      /etc/nginx/certs/privkey.pem /etc/nginx/certs/fullchain.pem
 
 EXPOSE 80 443
 
