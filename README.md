@@ -3,6 +3,8 @@
 Aplicación web (SPA) para gestión de tareas (To-Do List) con CRUD completo y filtro en tiempo real, construida para el
 **Trabajo Práctico: Despliegue Automatizado y Administración de Servicios en VPS** (Administración de Data Center, UPSE).
 
+**En producción:** https://3-144-146-133.nip.io (HTTPS con certificado de Let's Encrypt)
+
 ## Stack
 
 - **Frontend:** HTML/CSS/JS puro, sin build step, servido por **Nginx** (también actúa como proxy inverso hacia la API).

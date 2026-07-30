@@ -111,6 +111,7 @@ services:
     container_name: data-center-certbot
     profiles: ["tools"]
     entrypoint: ["certbot"]
+    networks: [internal]
     volumes:
       - letsencrypt:/etc/letsencrypt
       - certbot_www:/var/www/certbot
